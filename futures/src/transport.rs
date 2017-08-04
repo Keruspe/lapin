@@ -6,9 +6,10 @@ use nom::{IResult,Offset};
 use cookie_factory::GenError;
 use bytes::BytesMut;
 use std::cmp;
+use std::collections::HashMap;
 use std::iter::repeat;
 use std::io::{self,Error,ErrorKind};
-use futures::{Async,Poll,Sink,Stream,StartSend,Future,future};
+use futures::{Async,Poll,Sink,Stream,StartSend,Future,future,task};
 use tokio_io::{AsyncRead,AsyncWrite};
 use tokio_io::codec::{Decoder,Encoder,Framed};
 use channel::BasicProperties;
@@ -103,8 +104,9 @@ impl Encoder for AMQPCodec {
 
 /// Wrappers over a `Framed` stream using `AMQPCodec` and lapin-async's `Connection`
 pub struct AMQPTransport<T> {
-  upstream: Framed<T,AMQPCodec>,
-  pub conn: Connection,
+  upstream:  Framed<T,AMQPCodec>,
+  consumers: HashMap<String, task::Task>,
+  pub conn:  Connection,
 }
 
 impl<T> AMQPTransport<T>
@@ -131,6 +133,7 @@ impl<T> AMQPTransport<T>
     };
     let mut t = AMQPTransport {
       upstream:  stream.framed(codec),
+      consumers: HashMap::new(),
       conn:      conn,
     };
 
@@ -185,14 +188,44 @@ impl<T> AMQPTransport<T>
       self.start_send(frame).and_then(|_| self.poll_complete())
   }
 
-  fn handle_frames(&mut self) -> Poll<Option<()>, io::Error> {
-    trace!("handle frames");
-    loop {
-      // try_ready will return if we hit an error or NotReady.
-      if try_ready!(self.poll()).is_none() {
-        return Ok(Async::Ready(None));
+  fn notify_consumers(&self, got_frames: bool) {
+      if got_frames {
+          for (consumer_tag, consumer_task) in self.consumers.iter() {
+              debug!("Notify consumer {}", consumer_tag);
+              consumer_task.notify();
+          }
       }
-    }
+  }
+
+  fn handle_frames(&mut self) -> Poll<Option<()>, io::Error> {
+      trace!("handle frames");
+      let mut got_frames: bool = false;
+      loop {
+          match self.poll() {
+              Err(err)            => {
+                  self.notify_consumers(got_frames);
+                  return Err(err);
+              },
+              Ok(Async::NotReady) => {
+                  self.notify_consumers(got_frames);
+                  return Ok(Async::NotReady);
+              },
+              Ok(Async::Ready(r)) => {
+                  if r.is_none() {
+                      self.notify_consumers(got_frames);
+                      return Ok(Async::Ready(None))
+                  } else {
+                      got_frames = true;
+                  }
+              }
+          }
+      }
+  }
+
+  pub fn register_consumer(&mut self, consumer_tag: &str) {
+      if !self.consumers.contains_key(consumer_tag) {
+          self.consumers.insert(consumer_tag.to_string(), task::current());
+      }
   }
 }
 

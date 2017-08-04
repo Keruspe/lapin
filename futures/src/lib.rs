@@ -137,7 +137,7 @@
 extern crate amq_protocol;
 extern crate cookie_factory;
 extern crate bytes;
-#[macro_use] extern crate futures;
+extern crate futures;
 extern crate lapin_async;
 #[macro_use] extern crate log;
 extern crate nom;

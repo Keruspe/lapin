@@ -29,11 +29,12 @@ impl<T: AsyncRead+AsyncWrite+Sync+Send+'static> Stream for Consumer<T> {
         Ok(Async::Ready(Some(message)))
       } else {
         trace!("consumer[{}] not ready", self.consumer_tag);
+        transport.register_consumer(&self.consumer_tag);
         Ok(Async::NotReady)
       }
     } else {
       //FIXME: return an error in case of mutex failure
-      return Ok(Async::NotReady);
+      Ok(Async::NotReady)
     }
   }
 }
